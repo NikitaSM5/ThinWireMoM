@@ -225,24 +225,24 @@ classdef ThinWireMoM < handle
 
         function Zself = selfTermSameSegmentPair(obj, segId, sign_m, sign_n)
 
+            sameSign = (sign_m * sign_n > 0);
             L  = obj.Segments(segId).length;
             k  = obj.k;
 
             Nq = obj.NumIntPoints;
-            dx = L / Nq;
-
-            sameSign = (sign_m * sign_n > 0);
+            [xi, wi] = obj.gaussLegendre(Nq);
 
             accJ = 0;
             accD = 0;
 
             for p = 1:Nq
-                x = (p - 0.5) * dx;   % 0..L
+                x = 0.5*L*(xi(p) + 1);
+                w = 0.5*L*wi(p);
 
                 [fm, ~] = obj.evalHatOnSegment(segId, x, sign_m);
 
-                S0 = obj.S0_triangle(x, L);     
-                S1 = obj.S1_triangle(x, L);     
+                S0 = obj.S0_triangle(x, L);
+                S1 = obj.S1_triangle(x, L);
 
                 if sign_n > 0
                     innerFn = S0 - S1;
@@ -250,14 +250,12 @@ classdef ThinWireMoM < handle
                     innerFn = S1;
                 end
 
-                accJ = accJ + fm * innerFn;
-                accD = accD + obj.S2_triangle(x, L, sameSign);
+                accJ = accJ + w * fm * innerFn;
+                accD = accD + w * obj.S2_triangle(x, L, sameSign);
             end
 
-            Jterm = accJ * dx;
-            Dterm = accD * dx;
+            Zself = (1i * obj.omega * obj.mu) / (4*pi) * (accJ - (1/obj.k^2) * accD);
 
-            Zself = (1i * obj.omega * obj.mu) / (4*pi) * (Jterm - (1/k^2) * Dterm);
         end
 
 
@@ -326,44 +324,45 @@ classdef ThinWireMoM < handle
                 return;
             end
 
-            Nq  = obj.NumIntPoints;
-            dlm = Lm / Nq;
-            dln = Ln / Nq;
+            Nq = obj.NumIntPoints;
+            [xi, wi] = obj.gaussLegendre(Nq);
 
-            t_m = seg_m.t;
-            t_n = seg_n.t;
+            t_m = seg_m.t; 
+            t_n = seg_n.t; 
             tdot = dot(t_m, t_n);
 
             sumJ = 0;
             sumD = 0;
 
             for im = 1:Nq
-                l_m = (im - 0.5) * dlm;               
-                r_m = seg_m.r1 + seg_m.t * l_m;     
+                l_m = 0.5*Lm*(xi(im) + 1);
+                w_m = 0.5*Lm*wi(im);
 
+                r_m = seg_m.r1 + seg_m.t * l_m;
                 [Lm_val, dLm] = obj.evalHatOnSegment(segInfo_m.segId, l_m, sign_m);
 
                 for jn = 1:Nq
-                    l_n = (jn - 0.5) * dln;
-                    r_n = seg_n.r1 + seg_n.t * l_n;
+                    l_n = 0.5*Ln*(xi(jn) + 1);
+                    w_n = 0.5*Ln*wi(jn);
 
+                    r_n = seg_n.r1 + seg_n.t * l_n;
                     [Ln_val, dLn] = obj.evalHatOnSegment(segInfo_n.segId, l_n, sign_n);
 
                     R = norm(r_m - r_n);
                     G = obj.greenFunction(R);
 
-                    sumJ = sumJ + (Lm_val * Ln_val) * tdot * G;
-                    sumD = sumD + (dLm * dLn) * G;
+                    w = w_m * w_n;
+                    sumJ = sumJ + w * (Lm_val * Ln_val) * tdot * G;
+                    sumD = sumD + w * (dLm * dLn) * G;
                 end
             end
 
-            Zmn = (1i * obj.omega * obj.mu) * (sumJ - (1/obj.k^2)*sumD) * dlm * dln;
+            Zmn = (1i * obj.omega * obj.mu) * (sumJ - (1/obj.k^2) * sumD);
+
         end
 
         function G = greenFunction(obj, R)
-            a    = obj.WireRadius;
-            Reff = sqrt(R.^2 + a.^2);
-            G    = exp(-1i * obj.k * Reff) ./ (4 * pi * Reff);
+            G    = exp(-1i * obj.k * R) ./ (4 * pi * R);
         end
 
 
@@ -423,6 +422,26 @@ classdef ThinWireMoM < handle
             S2 = sgn * (logTerm - 1i * k * Dl) / (Dl^2);
         end
 
+        function [xi, wi] = gaussLegendre(obj, N)
+
+            if N == 1
+                xi = 0;
+                wi = 2;
+                return;
+            end
+
+            i = (1:N-1).';
+            beta = i ./ sqrt(4*i.^2 - 1);
+
+            J = diag(beta, 1) + diag(beta, -1);
+
+            [V, D] = eig(J);
+            xi = diag(D);
+            [xi, p] = sort(xi);
+            V = V(:, p);
+
+            wi = 2 * (V(1,:).^2).';
+        end
 
 
     end

@@ -3,16 +3,15 @@ close all;
 
 eps_r = 1.0;
 mu_r  = 1.0;
-
 c = 299792458;  
 f = 300e6;          
 lambda = c / f;   
-NumIntPoints = 16;
+NumIntPoints = 8;
 a = lambda/1e4;
-L_factor = 0.5;       
+L_factor = 0.47;       
 L        = L_factor*lambda*1;     
 
-Nseg = 81;
+Nseg = 31;
 dL = L/Nseg/NumIntPoints;
 
 
@@ -74,13 +73,14 @@ end
 segId = mom.findFeedSegmentId(FeedEdge);
 If = Iseg(segId);
 Zin = Vgap / If;
-fprintf('Zin = %.6f %+.6fj Ohm\n', real(Zin), imag(Zin));
-
+fprintf('Zin = %.6f %+.6fj Ом\n', real(Zin), imag(Zin));
+fprintf('Rin = %.6f Ом\n', abs(Zin));
 figure;
 plot(abs(Iseg), '-o'); grid on;
 xlim([0, M]);
 xlabel('Номер ребра');
 ylabel('|I|');
+
 
 
 
