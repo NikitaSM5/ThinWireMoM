@@ -106,14 +106,20 @@ classdef ThinWireMoM < handle
 
         function obj = buildVertexHatBasis(obj)
             Seg = obj.Segments;
-            E   = obj.AntGraph.Edges;
+            E = double(obj.AntGraph.Edges);
+            nVerts = size(obj.AntGraph.Vertices, 1);
 
-            activeVerts = unique(E(:));
-            Ndof        = numel(activeVerts);
+            deg = accumarray(E(:), 1, [nVerts,1]); 
 
-            nVerts       = size(obj.AntGraph.Vertices, 1);
-            dofOfVertex  = zeros(nVerts,1,'int32');
+            feedVerts = unique(double(obj.AntGraph.FeedEdge(:)));
+            isActive = (deg > 1);                  
+            isActive(feedVerts) = true;           
 
+            activeVerts = int32(find(isActive));
+            Ndof = numel(activeVerts);
+
+            dofOfVertex = zeros(nVerts,1,'int32');
+            
             for k = 1:Ndof
                 v = activeVerts(k);
                 dofOfVertex(v) = int32(k);
@@ -168,25 +174,21 @@ classdef ThinWireMoM < handle
             obj.Basis = Basis;
         end
 
-        function [Lambda, dLambda_ds] = evalHatOnSegment(obj, segId, s_local)
-            seg = obj.Segments(segId);
-            L   = seg.length;
+        function [Lambda, dLambda_dl] = evalHatOnSegment(obj, segId, l, signLocal)
+            L = obj.Segments(segId).length;
 
-            Lambda      = s_local / L;
-            dLambda_ds  = 1 / L;
+            if signLocal > 0
+                Lambda     = (L - l) / L;
+                dLambda_dl = -1 / L;
+            else
+                Lambda     = l / L;
+                dLambda_dl = +1 / L;
+            end
         end
 
         function t_local = getLocalTangent(obj, dofIdx, segId)
             s   = obj.Segments(segId);
             v   = obj.Basis.dofs(dofIdx).vertexId;
-
-            % if s.v1 == v
-            %     signLocal = +1;
-            % elseif s.v2 == v
-            %     signLocal = -1;
-            % end
-
-            % t_local = signLocal * s.t;
             t_local =  s.t;
         end
 
@@ -219,43 +221,68 @@ classdef ThinWireMoM < handle
             obj.Z = Zmat;
         end
 
+
+
+        function Zself = selfTermSameSegmentPair(obj, segId, sign_m, sign_n)
+
+            L  = obj.Segments(segId).length;
+            k  = obj.k;
+
+            Nq = obj.NumIntPoints;
+            dx = L / Nq;
+
+            sameSign = (sign_m * sign_n > 0);
+
+            accJ = 0;
+            accD = 0;
+
+            for p = 1:Nq
+                x = (p - 0.5) * dx;   % 0..L
+
+                [fm, ~] = obj.evalHatOnSegment(segId, x, sign_m);
+
+                S0 = obj.S0_triangle(x, L);     
+                S1 = obj.S1_triangle(x, L);     
+
+                if sign_n > 0
+                    innerFn = S0 - S1;
+                else
+                    innerFn = S1;
+                end
+
+                accJ = accJ + fm * innerFn;
+                accD = accD + obj.S2_triangle(x, L, sameSign);
+            end
+
+            Jterm = accJ * dx;
+            Dterm = accD * dx;
+
+            Zself = (1i * obj.omega * obj.mu) / (4*pi) * (Jterm - (1/k^2) * Dterm);
+        end
+
+
         function obj = assembleVDeltaGap(obj, Vgap)
             Ndof = obj.Basis.Ndof;
 
-            feedEdge = obj.AntGraph.FeedEdge;
-            feedEdge = sort(double(feedEdge(:))).';
-
-            segId = obj.findFeedSegmentId(feedEdge);
+            feedEdge = sort(double(obj.AntGraph.FeedEdge(:))).';
+            segId    = obj.findFeedSegmentId(feedEdge);
 
             dofOfVertex = obj.Basis.dofOfVertex;
-            v1 = feedEdge(1);
-            v2 = feedEdge(2);
-
+            v1  = feedEdge(1);
+            v2  = feedEdge(2);
             dof1 = dofOfVertex(v1);
             dof2 = dofOfVertex(v2);
 
+            Lfeed = obj.Segments(segId).length;
+            rhs_val = Vgap/2; 
+
             Vvec = complex(zeros(Ndof,1));
-
-            incSegs1 = obj.Basis.dofs(dof1).incidentSegs;
-            for k = 1:numel(incSegs1)
-                if incSegs1(k).segId == segId
-                    signLocal = double(incSegs1(k).sign);
-                    Vvec(dof1) = Vvec(dof1) + signLocal * (Vgap/2);
-                    break;
-                end
-            end
-
-            incSegs2 = obj.Basis.dofs(dof2).incidentSegs;
-            for k = 1:numel(incSegs2)
-                if incSegs2(k).segId == segId
-                    signLocal = double(incSegs2(k).sign);
-                    Vvec(dof2) = Vvec(dof2) + signLocal * (Vgap/2);
-                    break;
-                end
-            end
+            Vvec(dof1) = Vvec(dof1) + rhs_val;
+            Vvec(dof2) = Vvec(dof2) + rhs_val;
 
             obj.V = Vvec;
         end
+
 
         function segId = findFeedSegmentId(obj, feedEdge)
             feedEdge = sort(double(feedEdge(:))).';
@@ -273,9 +300,11 @@ classdef ThinWireMoM < handle
         end
 
 
+
     end
 
     methods (Access = private)
+
         function obj = updateEMParams(obj)
             obj.k   = obj.omega * sqrt(obj.mu * obj.eps);
             obj.eta = sqrt(obj.mu / obj.eps);
@@ -286,65 +315,55 @@ classdef ThinWireMoM < handle
             seg_m = obj.Segments(segInfo_m.segId);
             seg_n = obj.Segments(segInfo_n.segId);
 
-            Lm = segInfo_m.length;
-            Ln = segInfo_n.length;
+            Lm = seg_m.length;
+            Ln = seg_n.length;
 
             sign_m = double(segInfo_m.sign);
             sign_n = double(segInfo_n.sign);
 
-            isSameDof    = (m == n);
-            isSameSegment = (segInfo_m.segId == segInfo_n.segId);
-
-            if isSameDof && isSameSegment
-                % Zmn = obj.selfTermSameSegment(seg_m, segInfo_m);
-                % return;
+            if segInfo_m.segId == segInfo_n.segId
+                Zmn = obj.selfTermSameSegmentPair(segInfo_m.segId, sign_m, sign_n);
+                return;
             end
 
-            Nq = obj.NumIntPoints;
+            Nq  = obj.NumIntPoints;
+            dlm = Lm / Nq;
+            dln = Ln / Nq;
 
-            ds_m = Lm / Nq;
-            ds_n = Ln / Nq;
-
-            t_m = obj.getLocalTangent(m, segInfo_m.segId);
-            t_n = obj.getLocalTangent(n, segInfo_n.segId);
+            t_m = seg_m.t;
+            t_n = seg_n.t;
             tdot = dot(t_m, t_n);
 
             sumJ = 0;
             sumD = 0;
 
             for im = 1:Nq
-                s_m = (im - 0.5) * ds_m;
+                l_m = (im - 0.5) * dlm;               
+                r_m = seg_m.r1 + seg_m.t * l_m;     
 
-                r_m = obj.evalPointOnSegmentLocal(seg_m, s_m, sign_m);
-
-                [Lambda_m, dLambda_m_local] = obj.evalHatOnSegment(segInfo_m.segId, s_m);
-
-                dLambda_m = sign_m * dLambda_m_local;
+                [Lm_val, dLm] = obj.evalHatOnSegment(segInfo_m.segId, l_m, sign_m);
 
                 for jn = 1:Nq
-                    s_n = (jn - 0.5) * ds_n;
-                    r_n = obj.evalPointOnSegmentLocal(seg_n, s_n, sign_n);
+                    l_n = (jn - 0.5) * dln;
+                    r_n = seg_n.r1 + seg_n.t * l_n;
 
-                    Rvec = r_m - r_n;
-                    R    = norm(Rvec);
+                    [Ln_val, dLn] = obj.evalHatOnSegment(segInfo_n.segId, l_n, sign_n);
 
-                    [Lambda_n, dLambda_n_local] = obj.evalHatOnSegment(segInfo_n.segId, s_n);
-                    dLambda_n = sign_n * dLambda_n_local;
-
+                    R = norm(r_m - r_n);
                     G = obj.greenFunction(R);
 
-                    sumJ = sumJ + Lambda_m * Lambda_n * tdot * G;
-                    sumD = sumD + dLambda_m * dLambda_n * G;
+                    sumJ = sumJ + (Lm_val * Ln_val) * tdot * G;
+                    sumD = sumD + (dLm * dLn) * G;
                 end
             end
-            Zmn =  (sumJ - 1/obj.k^2 * sumD);
-            
+
+            Zmn = (1i * obj.omega * obj.mu) * (sumJ - (1/obj.k^2)*sumD) * dlm * dln;
         end
 
         function G = greenFunction(obj, R)
             a    = obj.WireRadius;
             Reff = sqrt(R.^2 + a.^2);
-            G    = exp(-1i * obj.k * Reff) ./ (4*pi*Reff);
+            G    = exp(-1i * obj.k * Reff) ./ (4 * pi * Reff);
         end
 
 
@@ -357,6 +376,18 @@ classdef ThinWireMoM < handle
             end
         end
 
+        function S0 = S0_triangle(obj, x, Dl)
+            a = obj.WireRadius;
+            k = obj.k;
+
+            sqrt1 = sqrt(a^2 + (x - Dl).^2);
+            sqrt2 = sqrt(a^2 + x.^2);
+
+            num = x + sqrt2;
+            den = x - Dl + sqrt1;
+
+            S0 = log(num./den) - 1i * k * Dl; 
+        end
 
         function S1 = S1_triangle(obj, x, Dl)
             a = obj.WireRadius;
@@ -392,32 +423,7 @@ classdef ThinWireMoM < handle
             S2 = sgn * (logTerm - 1i * k * Dl) / (Dl^2);
         end
 
-        function Zself = selfTermSameSegment(obj, seg, segInfo)
 
-            k   = obj.k;
-            L   = segInfo.length;
-            sgnVert = double(segInfo.sign);
-
-            Nq = obj.NumIntPoints;
-
-            dx = L / Nq;
-
-            acc = 0;
-
-            for p = 1:Nq
-
-                x = (p - 0.5) * dx;
-
-                % fm = obj.evalHatOnSegment(segInfo.segId, x);
-
-                S1 = obj.S1_triangle(x, L);
-                S2 = obj.S2_triangle(x, L, true);
-
-                acc = acc + ( fm * S1 - (1/k^2) * S2 );
-            end
-
-            Zself =  (1/(4*pi)) * acc * dx;
-        end
 
     end
 end

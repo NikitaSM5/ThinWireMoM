@@ -4,16 +4,20 @@ close all;
 eps_r = 1.0;
 mu_r  = 1.0;
 
-c = 3e8;  
+c = 299792458;  
 f = 300e6;          
-lambda = c / f;     
-a = lambda/1e9;
-L_factor = 3;       
-L        = L_factor*lambda*1;         
+lambda = c / f;   
+NumIntPoints = 16;
+a = lambda/1e4;
+L_factor = 0.5;       
+L        = L_factor*lambda*1;     
 
-Nseg = 101;
-fprintf('f = %.1f МГц, λ = %.4f м, L = %.4f м (%.2f λ), Nseg = %d\n', ...
-    f/1e6, lambda, L, L/lambda, Nseg);
+Nseg = 81;
+dL = L/Nseg/NumIntPoints;
+
+
+fprintf('f = %.1f МГц, λ = %.4f м, L = %.4f м (%.2f λ), a = %.4f, dL = %.4f, dL/a = %.4f ,Nseg = %d\n', ...
+    f/1e6, lambda, L, L/lambda, a , dL, dL/a , Nseg);
 
 Nz = Nseg + 1;
 z = linspace(-L/2, L/2, Nz).';
@@ -40,7 +44,7 @@ mom = ThinWireMoM(G, f, eps_r, mu_r, a);
 
 mom = mom.prepareGeometryAndBasis();
 
-NumIntPoints = 8;
+
 mom = mom.assembleZ(NumIntPoints);
 
 Vgap = 1.0;
@@ -48,56 +52,35 @@ mom = mom.assembleVDeltaGap(Vgap);
 
 mom.I = mom.Z \ mom.V;
 
-segId = mom.findFeedSegmentId(FeedEdge);
-
-dofOfVertex = mom.Basis.dofOfVertex;
-dof1 = dofOfVertex(v_feed1);
-dof2 = dofOfVertex(v_feed2);
-
+nVerts = size(Vertices,1);
+Ivert = zeros(nVerts,1);
+for v = 1:nVerts-1
+    d = mom.Basis.dofOfVertex(v);
+    if d > 0
+        Ivert(v) = mom.I(d);
+    else
+        Ivert(v) = 0;
+    end
+end
 
 M = numel(mom.Segments);
 Iseg = zeros(M,1);
-
 for s = 1:M
-    seg = mom.Segments(s);
-
-    v1 = double(seg.v1);
-    v2 = double(seg.v2);
-    d1 = dofOfVertex(v1);
-    d2 = dofOfVertex(v2);
-
-    Iseg(s) = 0.5*(mom.I(d1) - mom.I(d2));
+    v1 = double(mom.Segments(s).v1);
+    v2 = double(mom.Segments(s).v2);
+    Iseg(s) = 0.5*(Ivert(v1) + Ivert(v2));
 end
 
-
-Iseg(51) = (Iseg(50) + Iseg(52))/2;
-
-Zin    = Vgap / Iseg(51);
-
-fprintf('Z_in = %.3f %+.3fj Ом\n', real(Zin), imag(Zin));
-
-
+segId = mom.findFeedSegmentId(FeedEdge);
+If = Iseg(segId);
+Zin = Vgap / If;
+fprintf('Zin = %.6f %+.6fj Ohm\n', real(Zin), imag(Zin));
 
 figure;
-plot(1:M, abs(Iseg/abs(max(Iseg))), '-o'); grid on; 
+plot(abs(Iseg), '-o'); grid on;
 xlim([0, M]);
 xlabel('Номер ребра');
 ylabel('|I|');
 
-hold on
-
-z_seg = zeros(M,1);
-for s = 1:M
-    seg = mom.Segments(s);
-    v1 = double(seg.v1);
-    v2 = double(seg.v2);
-    z_seg(s) = 0.5*(Vertices(v1,3) + Vertices(v2,3));
-end
 
 
-
-k0 = 2*pi/lambda;
-I_theory = sin(k0*(L/2 - abs(z_seg)));
-
-plot(1:M, real(I_theory), 'r-', 'LineWidth', 2);
-legend('MoM','Теоретическое распределение','Location','best');
